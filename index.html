@@ -1,0 +1,256 @@
+<!doctype html>
+<!--
+  La page publique de suivi — « faire suivre ma course ».
+
+  UN SEUL FICHIER, SANS ÉTAPE DE BUILD, et c'est délibéré. Cette page n'a aucun privilège : elle
+  appelle un point d'entrée public et affiche onze champs. Lui donner un bundler, un framework et
+  un pipeline reviendrait à monter une infrastructure autour de deux cents lignes — alors qu'un
+  fichier se dépose tel quel sur n'importe quel hébergement statique, y compris celui qu'on
+  choisira en Algérie.
+
+  LE JETON EST DANS LE FRAGMENT (`#…`), PAS DANS LE CHEMIN NI LA REQUÊTE. C'est ce que la
+  correction d'architecture a permis de gagner : un fragment n'est JAMAIS envoyé au serveur. Il
+  n'apparaît dans aucun journal d'accès, dans aucun en-tête `Referer` vers le CDN de cartes, dans
+  aucun cache d'intermédiaire. Un jeton de suivi vaut lecture de la position de quelqu'un ; le
+  laisser traîner dans les journaux d'un hébergeur serait une fuite lente et silencieuse.
+
+  AUCUNE CLÉ. La page ne connaît que l'URL du point d'entrée. Pas de clé publiable, pas de jeton
+  d'API, rien qui puisse être réutilisé ailleurs.
+-->
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<!-- Le Referer complet n'est envoyé nulle part. Ceinture et bretelles avec le fragment. -->
+<meta name="referrer" content="no-referrer">
+<title>تتبّع الرحلة · Suivi de course</title>
+<style>
+  :root {
+    --fond: #0D1014; --surface: #161B21; --bord: #232A33;
+    --texte: #F4F6F8; --attenue: #93A0AD; --accent: #E8912D; --danger: #F0736A;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--fond); color: var(--texte);
+    font-family: system-ui, -apple-system, "Segoe UI", "Noto Sans Arabic", Roboto, sans-serif;
+    min-height: 100dvh; display: flex; flex-direction: column;
+  }
+  #carte { flex: 1 1 auto; min-height: 45dvh; background: var(--surface); }
+  /* Sans fond de carte, la zone se réduit à un bandeau : consacrer la moitié de l'écran à dire
+     « indisponible » ferait passer l'absence de carte pour le sujet de la page. Le sujet est la
+     plaque et le prénom, qui doivent rester au premier regard. */
+  #carte.vide {
+    flex: 0 0 auto; min-height: 0; padding: 12px;
+    display: grid; place-items: center; color: var(--attenue); font-size: 13px;
+    border-bottom: 1px solid var(--bord);
+  }
+  main { flex: 1 1 auto; padding: 20px 18px 14px; display: flex; flex-direction: column; gap: 14px; }
+  h1 { font-size: 20px; font-weight: 600; margin: 0; }
+  .lignes { display: flex; flex-direction: column; gap: 10px; }
+  .ligne { display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+           border-bottom: 1px solid var(--bord); padding-bottom: 8px; }
+  .ligne:last-child { border-bottom: 0; }
+  .cle { color: var(--attenue); font-size: 14px; }
+  .valeur { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  /* Plaque et durée restent en lecture latine même en interface arabe. */
+  .ltr { direction: ltr; unicode-bidi: isolate; }
+  .plaque { letter-spacing: 0.06em; }
+  #eta { color: var(--accent); font-size: 22px; }
+  #fraicheur { color: var(--danger); font-size: 13px; }
+  footer { padding: 14px 18px 22px; border-top: 1px solid var(--bord);
+           display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .marque { font-size: 13px; color: var(--attenue); line-height: 1.5; }
+  .marque strong { color: var(--texte); display: block; font-size: 15px; letter-spacing: 0.02em; }
+  #langue { color: var(--attenue); font-size: 13px; background: none;
+            border: 1px solid var(--bord); border-radius: 999px; padding: 6px 12px;
+            font: inherit; font-size: 13px; cursor: pointer; }
+  #ferme { margin: auto; padding: 32px 24px; text-align: center; max-width: 34rem; }
+  #ferme h1 { font-size: 22px; margin: 0 0 12px; }
+  #ferme p { color: var(--attenue); line-height: 1.6; margin: 0; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+
+<div id="carte" class="vide"></div>
+
+<main id="actif" hidden>
+  <h1 id="etat"></h1>
+  <div class="lignes">
+    <div class="ligne" id="ligne-eta" hidden>
+      <span class="cle" data-l="eta"></span><span class="valeur ltr" id="eta"></span>
+    </div>
+    <div class="ligne">
+      <span class="cle" data-l="driver"></span><span class="valeur" id="chauffeur"></span>
+    </div>
+    <div class="ligne">
+      <span class="cle" data-l="plate"></span><span class="valeur plaque ltr" id="plaque"></span>
+    </div>
+  </div>
+  <span id="fraicheur" data-l="stale" hidden></span>
+</main>
+
+<div id="ferme" hidden>
+  <h1 data-l="closedTitle"></h1>
+  <p data-l="closedBody"></p>
+</div>
+
+<footer>
+  <span class="marque"><strong>Taxi DZ</strong><span data-l="tagline"></span></span>
+  <button id="langue" type="button"></button>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  // ------------------------------------------------------------------ libellés
+  // L'arabe est la langue de premier rang : c'est le défaut, et le français demande un clic —
+  // sauf si le navigateur annonce clairement le français, auquel cas on ne fait pas semblant de
+  // ne pas le savoir.
+  var L = {
+    ar: {
+      dir: "rtl", lang: "ar", title: "تتبّع الرحلة",
+      assigned: "تم تعيين سائق", onTheWay: "السائق في الطريق إليك", onboard: "الرحلة جارية",
+      driver: "السائق", plate: "رقم اللوحة", eta: "الوصول المقدَّر", minutes: "دقيقة",
+      stale: "الموقع قديم — هذه آخر نقطة وصلتنا",
+      closedTitle: "انتهت الرحلة",
+      closedBody: "هذا الرابط لم يعد فعّالاً. لم تُحفَظ أي بيانات من الرحلة في هذه الصفحة.",
+      tagline: "سيارة أجرة معتمدة — عدّاد قانوني",
+      noMap: "الخريطة غير متوفرة", other: "Français",
+    },
+    fr: {
+      dir: "ltr", lang: "fr", title: "Suivi de course",
+      assigned: "Un chauffeur a été attribué", onTheWay: "Le chauffeur est en route",
+      onboard: "Course en cours",
+      driver: "Chauffeur", plate: "Plaque", eta: "Arrivée estimée", minutes: "min",
+      stale: "Position ancienne — c'est le dernier point qui nous est parvenu",
+      closedTitle: "Course terminée",
+      closedBody: "Ce lien n'est plus actif. Aucune donnée de la course n'est conservée sur cette page.",
+      tagline: "Taxi agréé — compteur réglementaire",
+      noMap: "Carte indisponible", other: "العربية",
+    },
+  };
+
+  var langue = (navigator.language || "").toLowerCase().indexOf("fr") === 0 ? "fr" : "ar";
+
+  function peindreLibelles() {
+    var l = L[langue];
+    document.documentElement.lang = l.lang;
+    document.documentElement.dir = l.dir;
+    document.title = l.title;
+    var noeuds = document.querySelectorAll("[data-l]");
+    for (var i = 0; i < noeuds.length; i += 1) {
+      noeuds[i].textContent = l[noeuds[i].getAttribute("data-l")];
+    }
+    document.getElementById("langue").textContent = l.other;
+    var carte = document.getElementById("carte");
+    if (carte.classList.contains("vide")) carte.textContent = l.noMap;
+    if (dernier) peindre(dernier);
+  }
+
+  document.getElementById("langue").addEventListener("click", function () {
+    langue = langue === "ar" ? "fr" : "ar";
+    // Le choix vaut pour cet appareil et pour ce lien : personne ne se connecte ici, il n'y a
+    // aucun compte où l'enregistrer.
+    try { localStorage.setItem("taxidz.suivi.langue", langue); } catch (e) { /* mode privé */ }
+    peindreLibelles();
+  });
+  try {
+    var memorisee = localStorage.getItem("taxidz.suivi.langue");
+    if (memorisee === "ar" || memorisee === "fr") langue = memorisee;
+  } catch (e) { /* mode privé : on garde la langue du navigateur */ }
+
+  // ------------------------------------------------------------------ le lien
+  // Le jeton vient du fragment, qui n'est jamais transmis au serveur. `API` est réécrit au dépôt
+  // (voir README) : une URL de projet en dur dans le fichier interdirait de le déposer tel quel
+  // pour un autre environnement.
+  var API = window.TRIP_SHARE_API || "__API_BASE__";
+  var STYLE = window.TRIP_SHARE_MAP_STYLE || "";
+  var jeton = (location.hash || "").replace(/^#/, "").trim();
+
+  var carte = null, marqueur = null, dernier = null;
+
+  function fermer() {
+    document.getElementById("actif").hidden = true;
+    document.getElementById("carte").hidden = true;
+    document.getElementById("ferme").hidden = false;
+    // Aucune donnée résiduelle : ce que la page avait affiché est effacé de la mémoire comme de
+    // l'écran. La promesse est vérifiable parce qu'il ne reste rien à oublier.
+    dernier = null;
+  }
+
+  function peindre(e) {
+    var l = L[langue];
+    document.getElementById("etat").textContent =
+      e.ride_status === "onboard" ? l.onboard
+      : e.ride_status === "approaching" ? l.onTheWay
+      : l.assigned;
+    document.getElementById("chauffeur").textContent = e.driver_first_name || "—";
+    document.getElementById("plaque").textContent = e.vehicle_plate || "—";
+
+    var ligneEta = document.getElementById("ligne-eta");
+    if (e.eta_minutes !== null && e.eta_minutes !== undefined) {
+      document.getElementById("eta").textContent = e.eta_minutes + " " + l.minutes;
+      ligneEta.hidden = false;
+    } else {
+      // Une durée absente se tait ; une durée inventée décrédibiliserait tout le reste de la page.
+      ligneEta.hidden = true;
+    }
+
+    // Cinq minutes : le même seuil que l'attribution côté serveur. Une position plus ancienne est
+    // DITE ancienne, plutôt que montrée comme si elle était fraîche — c'est la différence entre
+    // une carte utile et une carte qui ment.
+    var age = e.position_recorded_at
+      ? (Date.now() - new Date(e.position_recorded_at).getTime()) / 60000 : null;
+    document.getElementById("fraicheur").hidden = !(age !== null && age > 5);
+
+    if (STYLE && window.maplibregl && e.vehicle_longitude !== null) {
+      var pos = [e.vehicle_longitude, e.vehicle_latitude];
+      if (!carte) {
+        var conteneur = document.getElementById("carte");
+        conteneur.classList.remove("vide");
+        conteneur.textContent = "";
+        carte = new maplibregl.Map({ container: "carte", style: STYLE, center: pos, zoom: 13 });
+        var pastille = document.createElement("div");
+        pastille.style.cssText = "width:18px;height:18px;border-radius:50%;background:#E8912D;"
+          + "border:3px solid #0D1014;box-shadow:0 0 0 2px #E8912D";
+        marqueur = new maplibregl.Marker({ element: pastille }).setLngLat(pos).addTo(carte);
+      } else {
+        marqueur.setLngLat(pos);
+        carte.easeTo({ center: pos, duration: 800 });
+      }
+    }
+    dernier = e;
+  }
+
+  function rafraichir() {
+    fetch(API.replace(/\/$/, "") + "/" + encodeURIComponent(jeton) + "/etat", { cache: "no-store" })
+      .then(function (r) { return r.json(); })
+      .then(function (e) {
+        if (!e.active) { fermer(); return; }
+        document.getElementById("actif").hidden = false;
+        peindre(e);
+      })
+      .catch(function () {
+        // Un rafraîchissement manqué n'efface pas ce qui est à l'écran : une coupure de réseau de
+        // dix secondes ne doit pas faire croire que la course est finie.
+      });
+  }
+
+  peindreLibelles();
+  // Un jeton absent ou mal formé ne vaut pas un aller-retour : la page se ferme comme pour un lien
+  // expiré, et sans distinguer les deux cas.
+  if (!/^[0-9a-f]{64}$/.test(jeton)) {
+    fermer();
+  } else {
+    rafraichir();
+    // Dix secondes : assez pour suivre une voiture, assez peu pour ne pas vider la batterie de qui
+    // attend sur un trottoir.
+    setInterval(rafraichir, 10000);
+  }
+})();
+</script>
+</body>
+</html>

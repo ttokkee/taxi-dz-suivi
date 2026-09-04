@@ -1,0 +1,63 @@
+# Déploiement de la page sur GitHub Pages.
+#
+# Ce dépôt ne contient QUE la page. Il est public pour une seule raison : GitHub Pages n'est pas
+# disponible sur un dépôt privé sans plan payant, et cette page doit être atteignable par quelqu'un
+# qui n'a pas de compte — c'est toute sa fonction. Rien ici n'est secret : ni clé, ni logique
+# métier, ni donnée. Le code du produit reste dans le monorepo privé.
+
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# On ne coupe pas un déploiement en cours : une page à moitié déployée est une page cassée pour qui
+# la consulte à cet instant.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deployer:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploiement.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Injecter l'URL de l'API
+        env:
+          # Variable de dépôt, pas un secret : cette URL part déjà dans chaque build des apps. En
+          # faire une variable permet de basculer vers la production sans toucher au fichier.
+          API_BASE: ${{ vars.TRIP_SHARE_API_BASE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${API_BASE}" ]; then
+            echo "::error::Variable de dépôt TRIP_SHARE_API_BASE vide."
+            echo "::error::La page se déploierait avec son marqueur et n'afficherait jamais rien."
+            exit 1
+          fi
+          mkdir -p site
+          sed "s|__API_BASE__|${API_BASE}|" index.html > site/index.html
+          # Un marqueur restant signifierait un sed silencieusement inopérant, donc une page morte
+          # publiée sans que personne le sache.
+          if grep -q "__API_BASE__" site/index.html; then
+            echo "::error::Le marqueur __API_BASE__ subsiste après substitution."
+            exit 1
+          fi
+          touch site/.nojekyll
+          ls -la site/
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deploiement
+        uses: actions/deploy-pages@v4
