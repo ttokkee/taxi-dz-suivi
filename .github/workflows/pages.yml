@@ -37,6 +37,8 @@ jobs:
           # Variable de dépôt, pas un secret : cette URL part déjà dans chaque build des apps. En
           # faire une variable permet de basculer vers la production sans toucher au fichier.
           API_BASE: ${{ vars.TRIP_SHARE_API_BASE }}
+          # Fond de carte. Facultatif : sans lui la page masque la carte et garde le reste.
+          MAP_STYLE: ${{ vars.TRIP_SHARE_MAP_STYLE }}
         run: |
           set -euo pipefail
           if [ -z "${API_BASE}" ]; then
@@ -45,12 +47,18 @@ jobs:
             exit 1
           fi
           mkdir -p site
-          sed "s|__API_BASE__|${API_BASE}|" index.html > site/index.html
+          sed -e "s|__API_BASE__|${API_BASE}|" \
+              -e "s|__MAP_STYLE__|${MAP_STYLE}|" index.html > site/index.html
           # Un marqueur restant signifierait un sed silencieusement inopérant, donc une page morte
           # publiée sans que personne le sache.
           if grep -q "__API_BASE__" site/index.html; then
             echo "::error::Le marqueur __API_BASE__ subsiste après substitution."
             exit 1
+          fi
+          # Le fond de carte, lui, n'est pas bloquant : un marqueur restant se signale sans faire
+          # échouer le déploiement, parce que la page reste utile sans carte.
+          if grep -q "__MAP_STYLE__" site/index.html; then
+            echo "::warning::TRIP_SHARE_MAP_STYLE non défini — la page se déploie sans carte."
           fi
           touch site/.nojekyll
           ls -la site/

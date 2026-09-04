@@ -25,6 +25,17 @@
 <!-- Le Referer complet n'est envoyé nulle part. Ceinture et bretelles avec le fragment. -->
 <meta name="referrer" content="no-referrer">
 <title>تتبّع الرحلة · Suivi de course</title>
+<!-- MapLibre, chargé depuis un CDN. À AUTO-HÉBERGER en même temps que le fond de carte : une page
+     de suivi qui fait parler le navigateur d'un tiers à un CDN étranger est un flux sortant de
+     plus à déclarer, pour un fichier qu'on peut servir soi-même. La version est épinglée — une
+     bibliothèque de carte qui change sous nos pieds casserait la page sans qu'on la redéploie. -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.js"></script>
+<script>
+  // Injecté au déploiement, comme l'URL de l'API. Vide = la page dégrade en masquant la carte et
+  // garde le reste : une carte absente n'empêche pas de lire une plaque.
+  window.TRIP_SHARE_MAP_STYLE = "__MAP_STYLE__";
+</script>
 <style>
   :root {
     --fond: #0D1014; --surface: #161B21; --bord: #232A33;
@@ -168,6 +179,7 @@
   // pour un autre environnement.
   var API = window.TRIP_SHARE_API || "__API_BASE__";
   var STYLE = window.TRIP_SHARE_MAP_STYLE || "";
+  if (STYLE.indexOf("__") === 0) STYLE = "";  // marqueur non substitué : on dégrade, on ne casse pas.
   var jeton = (location.hash || "").replace(/^#/, "").trim();
 
   var carte = null, marqueur = null, dernier = null;
